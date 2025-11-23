@@ -1,8 +1,4 @@
-Here is a professional, portfolio-ready **README.md** file for your project.
 
-You can copy the code block below, create a file named `README.md` in your project folder, and paste it there. I have included sections for **Architecture**, **Live Demo links**, and **Setup Instructions** to make it look impressive to your professors.
-
------
 
 ````markdown
 # 🚀 AI Resume & Job Matcher
