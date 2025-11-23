@@ -46,7 +46,7 @@ The application follows a decoupled **Client-Server architecture**:
 
 ## 🚀 Live Demo
 
-* **Frontend App:** _[Add your Streamlit Share URL Here]_
+* **Frontend App:** https://resume-jobmatcher.streamlit.app/
 * **Backend API Docs:** https://resume-job-matcher-g7ja.onrender.com/docs
 
 ---
