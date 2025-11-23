@@ -1,9 +1,10 @@
 import streamlit as st
 import httpx
 import pandas as pd
+import os
 
 # CONFIG: Ensure this matches the port your Backend is running on!
-BACKEND_URL = "http://127.0.0.1:8002" 
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8002")
 st.set_page_config(page_title="Resume Matcher Pro", page_icon="💼", layout="wide")
 
 # --- SESSION STATE INIT ---
