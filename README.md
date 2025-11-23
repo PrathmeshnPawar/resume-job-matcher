@@ -1,6 +1,3 @@
-
-
-````markdown
 # 🚀 AI Resume & Job Matcher
 
 A full-stack AI application that helps job seekers optimize their resumes. It fetches real-time job listings, compares them against a user's uploaded PDF resume using Natural Language Processing (NLP), and provides a compatibility score along with a detailed skill gap analysis.
@@ -28,12 +25,10 @@ A full-stack AI application that helps job seekers optimize their resumes. It fe
 
 The application follows a decoupled **Client-Server architecture**:
 
-1.  **Frontend**: Built with **Streamlit** for a responsive, interactive UI. It communicates with the backend via REST API calls.
-2.  **Backend**: Built with **FastAPI**. It handles business logic, PDF processing, AI calculations, and database interactions.
-3.  **Database**: **PostgreSQL** (hosted on Neon.tech) stores user profiles and match history.
-4.  **AI Engine**: Uses `scikit-learn` for vectorizing text and calculating similarity scores.
-
-
+1. **Frontend**: Built with **Streamlit** for a responsive, interactive UI. It communicates with the backend via REST API calls.
+2. **Backend**: Built with **FastAPI**. It handles business logic, PDF processing, AI calculations, and database interactions.
+3. **Database**: **PostgreSQL** (hosted on Neon.tech) stores user profiles and match history.
+4. **AI Engine**: Uses `scikit-learn` for vectorizing text and calculating similarity scores.
 
 ---
 
@@ -51,8 +46,8 @@ The application follows a decoupled **Client-Server architecture**:
 
 ## 🚀 Live Demo
 
-* **Frontend App:** [Add your Streamlit Share URL Here]
-* **Backend API Docs:** [https://resume-job-matcher-g7ja.onrender.com/docs](https://resume-job-matcher-g7ja.onrender.com/docs)
+* **Frontend App:** _[Add your Streamlit Share URL Here]_
+* **Backend API Docs:** https://resume-job-matcher-g7ja.onrender.com/docs
 
 ---
 
@@ -61,15 +56,17 @@ The application follows a decoupled **Client-Server architecture**:
 Follow these steps to run the project on your local machine.
 
 ### Prerequisites
+
 * Docker & Docker Compose
 * Python 3.10+ (if running without Docker)
 * Git
 
 ### 1. Clone the Repository
+
 ```bash
-git clone [https://github.com/PrathmeshnPawar/resume-job-matcher.git](https://github.com/PrathmeshnPawar/resume-job-matcher.git)
+git clone https://github.com/PrathmeshnPawar/resume-job-matcher.git
 cd resume-job-matcher
-````
+
 
 ### 2\. Configure Environment Variables
 
