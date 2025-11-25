@@ -62,13 +62,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 def verify_password(plain_password, hashed_password):
-    # Fix: If password is too long for bcrypt (>72 chars), hash it first
     if len(plain_password) > 72:
         plain_password = hashlib.sha256(plain_password.encode('utf-8')).hexdigest()
     return pwd_context.verify(plain_password, hashed_password)
 
 def get_password_hash(password):
-    # Fix: If password is too long for bcrypt (>72 chars), hash it first
     if len(password) > 72:
         password = hashlib.sha256(password.encode('utf-8')).hexdigest()
     return pwd_context.hash(password)
@@ -108,7 +106,10 @@ class Token(BaseModel):
 
 class JobSearchRequest(BaseModel):
     title: str
-    location: str = "remote"
+    location: str = ""
+    page: int = 0
+    employment_type: Optional[str] = None # New Filter: Full-time, Part-time
+    remote_type: Optional[str] = None     # New Filter: Remote, Hybrid
 
 class JobResult(BaseModel):
     id: str
@@ -164,13 +165,49 @@ class JobSearchEngine:
         self.base_url = "https://api.theirstack.com/v1/jobs/search"
         self.api_key = THEIRSTACK_API_KEY
 
-    def search(self, title: str, location: str) -> List[JobResult]:
+    def search(self, title: str, location: str, page: int = 0, employment_type: str = None, remote_type: str = None) -> List[JobResult]:
         try:
             headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-            payload = {"job_title_or": [title], "job_location_pattern_or": [location], "posted_at_max_age_days": 45, "limit": 5, "include_total_results": False}
+            
+            payload = {
+                "job_title_or": [title],
+                "posted_at_max_age_days": 45,
+                "limit": 5,
+                "page": page, 
+                "include_total_results": False
+            }
+
+            # 1. Location & Work Style Logic
+            locations = []
+            if location and location.strip().lower() not in ["", "anywhere", "global", "remote"]:
+                locations.append(location)
+            
+            if remote_type and remote_type != "Any":
+                if remote_type.lower() == "remote":
+                    locations.append("remote")
+                elif remote_type.lower() == "hybrid":
+                    locations.append("hybrid")
+            
+            if locations:
+                payload["job_location_pattern_or"] = locations
+
+            # 2. Employment Type Logic (Using description matching)
+            if employment_type and employment_type != "Any":
+                patterns = []
+                et = employment_type.lower()
+                if "full" in et: patterns = ["full-time", "full time"]
+                elif "part" in et: patterns = ["part-time", "part time"]
+                elif "contract" in et: patterns = ["contract", "contractor"]
+                elif "intern" in et: patterns = ["intern", "internship"]
+                elif "freelance" in et: patterns = ["freelance"]
+                
+                if patterns:
+                    payload["job_description_pattern_or"] = patterns
+
             response = requests.post(self.base_url, json=payload, headers=headers, timeout=8)
             response.raise_for_status()
             data = response.json()
+            
             clean_jobs = []
             for item in data.get('data', []):
                 loc = item.get("job_location") or "Remote"
@@ -191,15 +228,13 @@ search_engine = JobSearchEngine()
 
 @app.post("/search-jobs")
 def search_jobs(request: JobSearchRequest):
-    return search_engine.search(request.title, request.location)
+    return search_engine.search(request.title, request.location, request.page, request.employment_type, request.remote_type)
 
 # --- MATCHING ENGINE ---
 def calculate_match(resume_text, jd):
     def clean(text):
         text = text.lower()
-        # Normalize tech terms
         text = text.replace("c#", "csharp").replace(".net", "dotnet").replace("c++", "cpp")
-        # Remove special chars
         return re.sub(r'[^a-z0-9\s]', ' ', text)
 
     clean_res = clean(resume_text)
@@ -209,8 +244,6 @@ def calculate_match(resume_text, jd):
     try:
         tfidf = TfidfVectorizer(stop_words='english').fit_transform([clean_res, clean_jd])
         score = cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0]
-        
-        # FIX: Convert numpy float to standard python float for database
         final_score = float(score * 4.0)
         final_score = round(min(final_score, 1.0) * 100, 2)
         return final_score
@@ -234,7 +267,6 @@ async def match_resume(
     missing = [s for s in jd_skills_list if s.lower() not in text.lower()]
     matched = [s for s in jd_skills_list if s.lower() in text.lower()]
 
-    # Save to DB
     db.add(Match(
         user_id=current_user.id, 
         job_title=job_description[:50] + "...", 
@@ -248,3 +280,7 @@ async def match_resume(
 @app.get("/history")
 def get_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Match).filter(Match.user_id == current_user.id).order_by(Match.match_date.desc()).all()
+
+@app.get("/")
+def root():
+    return {"message": "Resume Matcher API is Online and Connected to Neon DB!"}
