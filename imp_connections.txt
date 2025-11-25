@@ -1,0 +1,1 @@
+neon connection string = psql 'postgresql://neondb_owner:npg_ieSI4ELXYgK5@ep-withered-king-adn218yy-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'

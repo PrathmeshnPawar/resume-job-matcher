@@ -204,7 +204,7 @@ class JobSearchEngine:
                 if patterns:
                     payload["job_description_pattern_or"] = patterns
 
-            response = requests.post(self.base_url, json=payload, headers=headers, timeout=8)
+            response = requests.post(self.base_url, json=payload, headers=headers, timeout=20)
             response.raise_for_status()
             data = response.json()
             
