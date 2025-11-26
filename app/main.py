@@ -2,6 +2,7 @@ import os
 import re
 import requests
 import hashlib
+import httpx
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -226,6 +227,66 @@ class JobSearchEngine:
 
 search_engine = JobSearchEngine()
 
+# GEMINI / Generative Language API key
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+
+def call_gemini(prompt_text: str, model: str = "chat-bison-001", max_tokens: int = 800):
+    """Call the Generative Language REST API (Gemini/chat-bison style).
+    Returns a parsed JSON object when possible, otherwise returns dict with 'raw'.
+    """
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY not set")
+
+    url = f"https://generativelanguage.googleapis.com/v1beta2/models/{model}:generate?key={GEMINI_API_KEY}"
+
+    system_prompt = (
+        "You are an expert resume reviewer. Return ONLY a JSON object with keys: "
+        '"score" (0-100), "criticisms" (list of short points), "suggestions" (list of short actionable items), '
+        '"improvements" (optional list of suggested rewrites). Do not include extra text.'
+    )
+
+    full_prompt = system_prompt + "\n\nResume Text:\n" + prompt_text
+
+    payload = {
+        "prompt": {"text": full_prompt},
+        "temperature": 0.2,
+        "max_output_tokens": max_tokens,
+    }
+
+    with httpx.Client(timeout=60.0) as client:
+        r = client.post(url, json=payload)
+        r.raise_for_status()
+        data = r.json()
+
+    generated = ""
+    # Common shapes: 'candidates' or 'output'
+    if isinstance(data, dict) and "candidates" in data and len(data["candidates"]) > 0:
+        generated = data["candidates"][0].get("content", "")
+    elif isinstance(data, dict) and "output" in data and isinstance(data["output"], list):
+        pieces = []
+        for item in data["output"]:
+            if isinstance(item, dict) and "content" in item:
+                for c in item["content"]:
+                    if c.get("type") == "output_text":
+                        pieces.append(c.get("text", ""))
+        generated = "\n".join(pieces)
+    else:
+        # fallback: stringify
+        try:
+            generated = data.get("candidates", [{}])[0].get("content", str(data))
+        except Exception:
+            generated = str(data)
+
+    # Try to parse JSON out of the generated text
+    try:
+        import json
+        m = re.search(r"\{[\s\S]*\}", generated)
+        json_text = m.group(0) if m else generated
+        return json.loads(json_text)
+    except Exception:
+        return {"raw": generated}
+
 @app.post("/search-jobs")
 def search_jobs(request: JobSearchRequest):
     return search_engine.search(request.title, request.location, request.page, request.employment_type, request.remote_type)
@@ -263,84 +324,9 @@ async def match_resume(
     
     score = calculate_match(text, job_description)
     
-    # Normalize incoming job_skills. Accept comma-separated strings, JSON lists,
-    # or empty values. Try to extract readable skill names if elements are dict-like.
-    jd_skills_list = []
-    if job_skills:
-        # If looks like a JSON array, try to parse
-        try:
-            import json
-            parsed = json.loads(job_skills)
-            if isinstance(parsed, list):
-                # Extract string values or object 'name' fields
-                for el in parsed:
-                    if isinstance(el, str):
-                        jd_skills_list.append(el.strip())
-                    elif isinstance(el, dict):
-                        name = el.get('name') or el.get('title') or el.get('tech')
-                        if name: jd_skills_list.append(str(name).strip())
-        except Exception:
-            # Fallback: comma-separated
-            jd_skills_list = [s.strip() for s in job_skills.split(",") if s.strip()]
-
-    # If the upstream job API didn't provide structured skills, infer them
-    # from the job description using a curated alias -> canonical mapping.
-    if not jd_skills_list:
-        jd_lower = (job_description or "").lower()
-        skill_aliases = {
-            'python': 'Python', 'java': 'Java', 'c++': 'C++', 'c#': 'C#', 'csharp': 'C#', 'cpp': 'C++',
-            'javascript': 'JavaScript', 'js': 'JavaScript', 'typescript': 'TypeScript', 'node.js': 'Node.js', 'node': 'Node.js',
-            'react': 'React', 'react.js': 'React', 'angular': 'Angular', 'vue': 'Vue',
-            'django': 'Django', 'flask': 'Flask', 'spring': 'Spring',
-            'sql': 'SQL', 'postgresql': 'PostgreSQL', 'postgres': 'PostgreSQL', 'mysql': 'MySQL', 'nosql': 'NoSQL',
-            'mongodb': 'MongoDB', 'redis': 'Redis', 'elasticsearch': 'Elasticsearch',
-            'aws': 'AWS', 'azure': 'Azure', 'gcp': 'GCP', 'google cloud': 'GCP',
-            'docker': 'Docker', 'kubernetes': 'Kubernetes', 'k8s': 'Kubernetes', 'helm': 'Helm',
-            'git': 'Git', 'linux': 'Linux', 'bash': 'Bash', 'shell': 'Shell',
-            'html': 'HTML', 'css': 'CSS', 'sass': 'Sass',
-            'pandas': 'Pandas', 'numpy': 'NumPy', 'scikit-learn': 'Scikit-Learn', 'sklearn': 'Scikit-Learn',
-            'tensorflow': 'TensorFlow', 'pytorch': 'PyTorch', 'keras': 'Keras',
-            'spark': 'Spark', 'hadoop': 'Hadoop', 'scala': 'Scala', 'golang': 'Go', 'go': 'Go', 'rust': 'Rust',
-            'graphql': 'GraphQL', 'rest': 'REST', 'restful': 'REST', 'api': 'API',
-            'microservice': 'Microservices', 'microservices': 'Microservices', 'ci/cd': 'CI/CD', 'jenkins': 'Jenkins',
-            'terraform': 'Terraform', 'ansible': 'Ansible', 'vagrant': 'Vagrant',
-            'redis': 'Redis', 'kafka': 'Kafka'
-        }
-
-        inferred = set()
-        for alias, canonical in skill_aliases.items():
-            # Match using word boundaries, allow dots and dashes in aliases
-            pattern = r"\b" + re.escape(alias) + r"\b"
-            if re.search(pattern, jd_lower):
-                inferred.add(canonical)
-
-        # Also look for common multi-word skills explicitly
-        multi_word = ['machine learning', 'data science', 'deep learning', 'natural language processing']
-        for phrase in multi_word:
-            if phrase in jd_lower:
-                inferred.add(phrase.title())
-
-        jd_skills_list = list(inferred)
-
-    # Use word-boundary matching against the resume text to determine matched/missing skills
-    missing = []
+    # Skills comparison removed per request — return empty lists for matched/missing skills
     matched = []
-    text_lower = text.lower()
-    for s in jd_skills_list:
-        if not s:
-            continue
-        s_lower = s.lower()
-        pattern = r"\b" + re.escape(s_lower) + r"\b"
-        if re.search(pattern, text_lower):
-            matched.append(s)
-        else:
-            missing.append(s)
-
-    # Debug log for inferred/normalized skills (helps debugging in dev)
-    try:
-        print(f"[match-resume] jd_skills_list={jd_skills_list} matched={matched} missing={missing}")
-    except Exception:
-        pass
+    missing = []
 
     db.add(Match(
         user_id=current_user.id, 
@@ -351,6 +337,32 @@ async def match_resume(
     db.commit()
 
     return MatchResponse(match_percentage=score, missing_skills=missing, matched_skills=matched)
+
+
+@app.post("/review-resume")
+async def review_resume(
+    file: UploadFile = File(...),
+    job_description: str = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Extract resume text and call Gemini to produce a structured critique and suggestions."""
+    try:
+        reader = PdfReader(file.file)
+        resume_text = "".join([page.extract_text() or "" for page in reader.pages])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Unable to read PDF: {e}")
+
+    prompt_text = resume_text
+    if job_description:
+        prompt_text = f"Job Description:\n{job_description}\n\nResume:\n{resume_text}"
+
+    try:
+        result = call_gemini(prompt_text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI call failed: {e}")
+
+    return result
 
 @app.get("/history")
 def get_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):

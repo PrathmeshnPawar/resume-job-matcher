@@ -160,6 +160,59 @@ with tab1:
                                 except Exception as e:
                                     st.error(f"Error: {e}")
 
+                    # Section: Review with AI
+                    st.markdown("---")
+                    review_key = f"review_{job.get('id')}"
+                    if st.button("Review with AI", key=review_key):
+                        if not uploaded:
+                            st.warning("Please upload a resume first.")
+                        else:
+                            with st.spinner("Requesting AI review..."):
+                                headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                                files = {"file": (uploaded.name, uploaded, "application/pdf")}
+                                data = {"job_description": job.get('description') or ""}
+                                try:
+                                    with httpx.Client(trust_env=False) as client:
+                                        res = client.post(f"{BACKEND_URL}/review-resume", data=data, files=files, headers=headers, timeout=120)
+                                    if res.status_code == 200:
+                                        st.session_state[f"ai_review_{job.get('id')}"] = res.json()
+                                    else:
+                                        st.error("AI review failed.")
+                                except Exception as e:
+                                    st.error(f"AI error: {e}")
+
+                    # Render AI results if present in session state
+                    ai_key = f"ai_review_{job.get('id')}"
+                    if ai_key in st.session_state:
+                        review = st.session_state[ai_key]
+                        st.markdown("---")
+                        st.subheader("AI Review")
+                        # AI score metric
+                        ai_score = review.get('score') if isinstance(review, dict) else None
+                        if ai_score is not None:
+                            st.metric("AI Score", f"{ai_score}")
+
+                        with st.expander("AI Critique & Suggestions", expanded=True):
+                            if isinstance(review, dict):
+                                if review.get('criticisms'):
+                                    st.subheader("Criticisms")
+                                    for c in review['criticisms']:
+                                        st.write(f"- {c}")
+                                if review.get('suggestions'):
+                                    st.subheader("Suggestions")
+                                    for s in review['suggestions']:
+                                        st.write(f"- {s}")
+                                if review.get('improvements'):
+                                    st.subheader("Suggested Rewrites")
+                                    for item in review['improvements']:
+                                        st.caption(item.get('section',''))
+                                        st.code(item.get('rewrite',''))
+                                if review.get('raw'):
+                                    with st.expander("Raw AI output (debug)"):
+                                        st.code(review['raw'])
+                            else:
+                                st.write(review)
+
             st.divider()
             c1, c2, c3 = st.columns([1, 2, 1])
             if c1.button("⬅️ Prev") and st.session_state.page > 0:
