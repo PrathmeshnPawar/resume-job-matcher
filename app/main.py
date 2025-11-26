@@ -3,6 +3,8 @@ import re
 import requests
 import hashlib
 import httpx
+import logging
+import json
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -229,6 +231,10 @@ search_engine = JobSearchEngine()
 
 # GEMINI / Generative Language API key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MOCK = os.getenv("GEMINI_MOCK", "false").lower() in ("1", "true", "yes")
+
+logger = logging.getLogger("app")
+logging.basicConfig(level=logging.INFO)
 
 
 def call_gemini(prompt_text: str, model: str = "chat-bison-001", max_tokens: int = 800):
@@ -254,10 +260,23 @@ def call_gemini(prompt_text: str, model: str = "chat-bison-001", max_tokens: int
         "max_output_tokens": max_tokens,
     }
 
-    with httpx.Client(timeout=60.0) as client:
-        r = client.post(url, json=payload)
-        r.raise_for_status()
-        data = r.json()
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            r = client.post(url, json=payload)
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPStatusError as e:
+        # include response content for debugging
+        content = None
+        try:
+            content = e.response.text
+        except Exception:
+            content = str(e)
+        logger.error("Gemini API returned HTTP error: %s", content)
+        raise RuntimeError(f"Gemini API HTTP error: {e.response.status_code} - {content}")
+    except Exception as e:
+        logger.exception("Error calling Gemini API: %s", e)
+        raise RuntimeError(f"Error calling Gemini API: {e}")
 
     generated = ""
     # Common shapes: 'candidates' or 'output'
@@ -280,11 +299,11 @@ def call_gemini(prompt_text: str, model: str = "chat-bison-001", max_tokens: int
 
     # Try to parse JSON out of the generated text
     try:
-        import json
         m = re.search(r"\{[\s\S]*\}", generated)
         json_text = m.group(0) if m else generated
         return json.loads(json_text)
     except Exception:
+        logger.warning("Failed to parse JSON from Gemini output; returning raw text")
         return {"raw": generated}
 
 @app.post("/search-jobs")
@@ -357,9 +376,26 @@ async def review_resume(
     if job_description:
         prompt_text = f"Job Description:\n{job_description}\n\nResume:\n{resume_text}"
 
+    # If GEMINI_API_KEY is not set, either return a mock response (if enabled)
+    # or return an informative error so the frontend can surface it.
+    if not GEMINI_API_KEY:
+        if GEMINI_MOCK:
+            logger.info("GEMINI_API_KEY not set - returning mock AI review (GEMINI_MOCK=true)")
+            mock = {
+                "score": 75,
+                "criticisms": ["Summary is short", "Add quantifiable achievements"],
+                "suggestions": ["Expand summary to 3-4 lines", "Add metrics to projects"],
+                "improvements": [{"section": "Summary", "rewrite": "Experienced Software Engineer with 5+ years..."}]
+            }
+            return mock
+        else:
+            logger.error("GEMINI_API_KEY not set and GEMINI_MOCK is false")
+            raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured on server. Set GEMINI_API_KEY or enable GEMINI_MOCK for testing.")
+
     try:
         result = call_gemini(prompt_text)
     except Exception as e:
+        logger.exception("call_gemini failed: %s", e)
         raise HTTPException(status_code=500, detail=f"AI call failed: {e}")
 
     return result

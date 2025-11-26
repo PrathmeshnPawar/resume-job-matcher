@@ -177,7 +177,12 @@ with tab1:
                                     if res.status_code == 200:
                                         st.session_state[f"ai_review_{job.get('id')}"] = res.json()
                                     else:
-                                        st.error("AI review failed.")
+                                        # Show backend error details to help debugging
+                                        try:
+                                            detail = res.json()
+                                        except Exception:
+                                            detail = res.text
+                                        st.error(f"AI review failed: {res.status_code} - {detail}")
                                 except Exception as e:
                                     st.error(f"AI error: {e}")
 

@@ -21,7 +21,7 @@ services:
     depends_on:
       - db
     environment:
-      
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - DATABASE_URL=postgresql://matcher_admin:dbpassword123@db:5432/resumematcher
       - THEIRSTACK_API_KEY=${THEIRSTACK_API_KEY}
     volumes:
