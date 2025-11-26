@@ -110,57 +110,55 @@ with tab1:
             st.subheader(f"Results (Page {st.session_state.page + 1})")
             for job in st.session_state.jobs:
                 with st.expander(f"💼 {job.get('title','Untitled')} @ {job.get('company','Unknown')}"):
-                    # Two-column layout: left = details + editable description, right = upload + actions
-                    left, right = st.columns([3, 1])
-                    # Left: details and editable/pasteable job description
-                    with left:
-                        st.markdown(f"**Location:** {job.get('location','N/A')}")
-                        short_desc = (job.get('description') or "").strip()
-                        if short_desc:
-                            preview = short_desc[:300] + ("..." if len(short_desc) > 300 else "")
-                            st.write(preview)
+                    # Vertical layout with clear sections: Job info -> Resume uploader -> Analyze -> Job description
+                    st.markdown(f"**Location:** {job.get('location','N/A')}")
+                    short_desc = (job.get('description') or "").strip()
+                    if short_desc:
+                        preview = short_desc[:300] + ("..." if len(short_desc) > 300 else "")
+                        st.write(preview)
+                    else:
+                        st.info("No job description available.")
+
+                    # Section: Resume upload
+                    st.markdown("---")
+                    st.subheader("Resume")
+                    file_key = f"file_{job.get('id')}"
+                    uploaded = st.file_uploader("Drag and drop or browse to upload (PDF)", type=["pdf"], key=file_key)
+
+                    # Section: Analyze button
+                    st.markdown("---")
+                    analyze_key = f"btn_{job.get('id')}"
+                    if st.button("Analyze", key=analyze_key):
+                        if not uploaded:
+                            st.warning("Please upload a resume PDF before analyzing.")
                         else:
-                            st.info("No job description available.")
-
-                        # Use the original job description from the API when sending to backend.
-                        job_description = job.get('description') or ""
-
-                    # Right: upload resume and analyze
-                    with right:
-                        st.caption("Resume & Analysis")
-                        file_key = f"file_{job.get('id')}"
-                        uploaded = st.file_uploader("Upload Resume (PDF)", type=["pdf"], key=file_key)
-                        analyze_key = f"btn_{job.get('id')}"
-                        if st.button("Analyze", key=analyze_key):
-                            if not uploaded:
-                                st.warning("Please upload a resume PDF before analyzing.")
-                            else:
-                                with st.spinner("Analyzing..."):
-                                    headers = {"Authorization": f"Bearer {st.session_state.token}"}
-                                    files = {"file": (uploaded.name, uploaded, "application/pdf")}
-                                    data = {"job_description": job_description, "job_skills": ",".join(job.get('skills', []))}
-                                    try:
-                                        with httpx.Client(trust_env=False) as client:
-                                            res = client.post(f"{BACKEND_URL}/match-resume", data=data, files=files, headers=headers, timeout=30)
-                                        if res.status_code == 200:
-                                            result = res.json()
-                                            score = result.get('match_percentage', 0)
-                                            st.divider()
-                                            if score >= 75:
-                                                st.success(f"### 🚀 Match: {score}%")
-                                            elif score >= 50:
-                                                st.warning(f"### ⚠️ Match: {score}%")
-                                            else:
-                                                st.error(f"### ❌ Match: {score}%")
-
-                                            st.divider()
-                                            # Skills display removed per user request.
-                                            with st.expander("📄 Full Job Description"):
-                                                st.markdown(job.get('description') or "No description provided.")
+                            with st.spinner("Analyzing..."):
+                                headers = {"Authorization": f"Bearer {st.session_state.token}"}
+                                files = {"file": (uploaded.name, uploaded, "application/pdf")}
+                                job_description = job.get('description') or ""
+                                data = {"job_description": job_description, "job_skills": ",".join(job.get('skills', []))}
+                                try:
+                                    with httpx.Client(trust_env=False) as client:
+                                        res = client.post(f"{BACKEND_URL}/match-resume", data=data, files=files, headers=headers, timeout=30)
+                                    if res.status_code == 200:
+                                        result = res.json()
+                                        score = result.get('match_percentage', 0)
+                                        st.divider()
+                                        if score >= 75:
+                                            st.success(f"### 🚀 Match: {score}%")
+                                        elif score >= 50:
+                                            st.warning(f"### ⚠️ Match: {score}%")
                                         else:
-                                            st.error("Analysis failed.")
-                                    except Exception as e:
-                                        st.error(f"Error: {e}")
+                                            st.error(f"### ❌ Match: {score}%")
+
+                                        st.divider()
+                                        # Skills display removed per user request.
+                                        with st.expander("📄 Full Job Description"):
+                                            st.markdown(job.get('description') or "No description provided.")
+                                    else:
+                                        st.error("Analysis failed.")
+                                except Exception as e:
+                                    st.error(f"Error: {e}")
 
             st.divider()
             c1, c2, c3 = st.columns([1, 2, 1])
