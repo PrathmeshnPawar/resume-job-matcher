@@ -263,32 +263,84 @@ async def match_resume(
     
     score = calculate_match(text, job_description)
     
-    jd_skills_list = [s.strip() for s in job_skills.split(",")] if job_skills else []
+    # Normalize incoming job_skills. Accept comma-separated strings, JSON lists,
+    # or empty values. Try to extract readable skill names if elements are dict-like.
+    jd_skills_list = []
+    if job_skills:
+        # If looks like a JSON array, try to parse
+        try:
+            import json
+            parsed = json.loads(job_skills)
+            if isinstance(parsed, list):
+                # Extract string values or object 'name' fields
+                for el in parsed:
+                    if isinstance(el, str):
+                        jd_skills_list.append(el.strip())
+                    elif isinstance(el, dict):
+                        name = el.get('name') or el.get('title') or el.get('tech')
+                        if name: jd_skills_list.append(str(name).strip())
+        except Exception:
+            # Fallback: comma-separated
+            jd_skills_list = [s.strip() for s in job_skills.split(",") if s.strip()]
 
-    # If the upstream job API didn't provide structured skills, try to infer them
-    # from the job description using a small common-skills heuristic.
+    # If the upstream job API didn't provide structured skills, infer them
+    # from the job description using a curated alias -> canonical mapping.
     if not jd_skills_list:
-        common_skills = [
-            'python','java','c++','c#','javascript','typescript','sql','react',
-            'django','flask','aws','azure','docker','kubernetes','git','linux',
-            'bash','node','html','css','pandas','numpy','tensorflow','pytorch'
-        ]
-        jd_lower = job_description.lower()
-        inferred = [s for s in common_skills if s in jd_lower]
-        jd_skills_list = inferred
+        jd_lower = (job_description or "").lower()
+        skill_aliases = {
+            'python': 'Python', 'java': 'Java', 'c++': 'C++', 'c#': 'C#', 'csharp': 'C#', 'cpp': 'C++',
+            'javascript': 'JavaScript', 'js': 'JavaScript', 'typescript': 'TypeScript', 'node.js': 'Node.js', 'node': 'Node.js',
+            'react': 'React', 'react.js': 'React', 'angular': 'Angular', 'vue': 'Vue',
+            'django': 'Django', 'flask': 'Flask', 'spring': 'Spring',
+            'sql': 'SQL', 'postgresql': 'PostgreSQL', 'postgres': 'PostgreSQL', 'mysql': 'MySQL', 'nosql': 'NoSQL',
+            'mongodb': 'MongoDB', 'redis': 'Redis', 'elasticsearch': 'Elasticsearch',
+            'aws': 'AWS', 'azure': 'Azure', 'gcp': 'GCP', 'google cloud': 'GCP',
+            'docker': 'Docker', 'kubernetes': 'Kubernetes', 'k8s': 'Kubernetes', 'helm': 'Helm',
+            'git': 'Git', 'linux': 'Linux', 'bash': 'Bash', 'shell': 'Shell',
+            'html': 'HTML', 'css': 'CSS', 'sass': 'Sass',
+            'pandas': 'Pandas', 'numpy': 'NumPy', 'scikit-learn': 'Scikit-Learn', 'sklearn': 'Scikit-Learn',
+            'tensorflow': 'TensorFlow', 'pytorch': 'PyTorch', 'keras': 'Keras',
+            'spark': 'Spark', 'hadoop': 'Hadoop', 'scala': 'Scala', 'golang': 'Go', 'go': 'Go', 'rust': 'Rust',
+            'graphql': 'GraphQL', 'rest': 'REST', 'restful': 'REST', 'api': 'API',
+            'microservice': 'Microservices', 'microservices': 'Microservices', 'ci/cd': 'CI/CD', 'jenkins': 'Jenkins',
+            'terraform': 'Terraform', 'ansible': 'Ansible', 'vagrant': 'Vagrant',
+            'redis': 'Redis', 'kafka': 'Kafka'
+        }
 
-    # Use word-boundary matching to avoid accidental substrings.
+        inferred = set()
+        for alias, canonical in skill_aliases.items():
+            # Match using word boundaries, allow dots and dashes in aliases
+            pattern = r"\b" + re.escape(alias) + r"\b"
+            if re.search(pattern, jd_lower):
+                inferred.add(canonical)
+
+        # Also look for common multi-word skills explicitly
+        multi_word = ['machine learning', 'data science', 'deep learning', 'natural language processing']
+        for phrase in multi_word:
+            if phrase in jd_lower:
+                inferred.add(phrase.title())
+
+        jd_skills_list = list(inferred)
+
+    # Use word-boundary matching against the resume text to determine matched/missing skills
     missing = []
     matched = []
     text_lower = text.lower()
     for s in jd_skills_list:
-        if not s: 
+        if not s:
             continue
-        pattern = r"\b" + re.escape(s.lower()) + r"\b"
+        s_lower = s.lower()
+        pattern = r"\b" + re.escape(s_lower) + r"\b"
         if re.search(pattern, text_lower):
             matched.append(s)
         else:
             missing.append(s)
+
+    # Debug log for inferred/normalized skills (helps debugging in dev)
+    try:
+        print(f"[match-resume] jd_skills_list={jd_skills_list} matched={matched} missing={missing}")
+    except Exception:
+        pass
 
     db.add(Match(
         user_id=current_user.id, 
