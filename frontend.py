@@ -120,12 +120,10 @@ with tab1:
                             preview = short_desc[:300] + ("..." if len(short_desc) > 300 else "")
                             st.write(preview)
                         else:
-                            st.info("No job description available — paste or edit one below to analyze.")
+                            st.info("No job description available.")
 
-                        # Editable description box (user can paste or edit). Keyed by job id for persistence.
-                        desc_key = f"job_desc_{job.get('id')}"
-                        desc_value = job.get('description') or ""
-                        job_description = st.text_area("Job description (edit or paste)", value=desc_value, height=180, key=desc_key)
+                        # Use the original job description from the API when sending to backend.
+                        job_description = job.get('description') or ""
 
                     # Right: upload resume and analyze
                     with right:
@@ -155,13 +153,10 @@ with tab1:
                                             else:
                                                 st.error(f"### ❌ Match: {score}%")
 
-                                            c1, c2 = st.columns(2)
-                                            c1.success("✅ **You Have:**\n" + "\n".join([f"- {s}" for s in result.get('matched_skills', [])]))
-                                            c2.error("❌ **Missing:**\n" + "\n".join([f"- {s}" for s in result.get('missing_skills', [])]))
-
                                             st.divider()
+                                            # Skills display removed per user request.
                                             with st.expander("📄 Full Job Description"):
-                                                st.markdown(job_description or "No description provided.")
+                                                st.markdown(job.get('description') or "No description provided.")
                                         else:
                                             st.error("Analysis failed.")
                                     except Exception as e:
