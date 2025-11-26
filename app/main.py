@@ -264,8 +264,31 @@ async def match_resume(
     score = calculate_match(text, job_description)
     
     jd_skills_list = [s.strip() for s in job_skills.split(",")] if job_skills else []
-    missing = [s for s in jd_skills_list if s.lower() not in text.lower()]
-    matched = [s for s in jd_skills_list if s.lower() in text.lower()]
+
+    # If the upstream job API didn't provide structured skills, try to infer them
+    # from the job description using a small common-skills heuristic.
+    if not jd_skills_list:
+        common_skills = [
+            'python','java','c++','c#','javascript','typescript','sql','react',
+            'django','flask','aws','azure','docker','kubernetes','git','linux',
+            'bash','node','html','css','pandas','numpy','tensorflow','pytorch'
+        ]
+        jd_lower = job_description.lower()
+        inferred = [s for s in common_skills if s in jd_lower]
+        jd_skills_list = inferred
+
+    # Use word-boundary matching to avoid accidental substrings.
+    missing = []
+    matched = []
+    text_lower = text.lower()
+    for s in jd_skills_list:
+        if not s: 
+            continue
+        pattern = r"\b" + re.escape(s.lower()) + r"\b"
+        if re.search(pattern, text_lower):
+            matched.append(s)
+        else:
+            missing.append(s)
 
     db.add(Match(
         user_id=current_user.id, 

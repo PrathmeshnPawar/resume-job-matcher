@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # 1. The Database Service
+  
   db:
     image: postgres:15
     volumes:
@@ -13,7 +13,7 @@ services:
     ports:
       - "5432:5432"
 
-  # 2. Your Python Backend Service
+  
   backend:
     build: .
     ports:
@@ -21,11 +21,11 @@ services:
     depends_on:
       - db
     environment:
-      # Notice the host is 'db', not 'localhost'
+      
       - DATABASE_URL=postgresql://matcher_admin:dbpassword123@db:5432/resumematcher
       - THEIRSTACK_API_KEY=${THEIRSTACK_API_KEY}
     volumes:
-      # Syncs your local code with the container so you can still edit files
+      
       - .:/code
 
 volumes:
