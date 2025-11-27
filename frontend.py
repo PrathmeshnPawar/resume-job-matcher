@@ -76,12 +76,17 @@ with tab1:
                     "employment_type": st.session_state.search_employment if st.session_state.search_employment != "Any" else None,
                     "remote_type": st.session_state.search_remote if st.session_state.search_remote != "Any" else None
                 }
-                with httpx.Client(trust_env=False) as client:
-                    res = client.post(f"{BACKEND_URL}/search-jobs", json=payload)
+                with httpx.Client(trust_env=False, timeout=60.0) as client:
+                    res = client.post(f"{BACKEND_URL}/search-jobs", json=payload, timeout=60.0)
                     if res.status_code == 200:
                         st.session_state.jobs = res.json()
                     else:
-                        st.error("Search failed.")
+                        # show backend status and body to aid debugging
+                        try:
+                            body = res.json()
+                        except Exception:
+                            body = res.text
+                        st.error(f"Search failed: {res.status_code} - {body}")
             except Exception as e: st.error(f"Error: {e}")
 
     with col_search:
@@ -138,8 +143,8 @@ with tab1:
                                 job_description = job.get('description') or ""
                                 data = {"job_description": job_description, "job_skills": ",".join(job.get('skills', []))}
                                 try:
-                                    with httpx.Client(trust_env=False) as client:
-                                        res = client.post(f"{BACKEND_URL}/match-resume", data=data, files=files, headers=headers, timeout=30)
+                                    with httpx.Client(trust_env=False, timeout=90.0) as client:
+                                        res = client.post(f"{BACKEND_URL}/match-resume", data=data, files=files, headers=headers, timeout=90.0)
                                     if res.status_code == 200:
                                         result = res.json()
                                         score = result.get('match_percentage', 0)
@@ -172,8 +177,8 @@ with tab1:
                                 files = {"file": (uploaded.name, uploaded, "application/pdf")}
                                 data = {"job_description": job.get('description') or ""}
                                 try:
-                                    with httpx.Client(trust_env=False) as client:
-                                        res = client.post(f"{BACKEND_URL}/review-resume", data=data, files=files, headers=headers, timeout=120)
+                                    with httpx.Client(trust_env=False, timeout=180.0) as client:
+                                        res = client.post(f"{BACKEND_URL}/review-resume", data=data, files=files, headers=headers, timeout=180.0)
                                     if res.status_code == 200:
                                         st.session_state[f"ai_review_{job.get('id')}"] = res.json()
                                     else:

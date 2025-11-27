@@ -1,34 +1,37 @@
-version: '3.8'
-
 services:
-  
   db:
     image: postgres:15
+    environment:
+      POSTGRES_USER: matcher_admin
+      POSTGRES_PASSWORD: dbpassword123
+      POSTGRES_DB: resumematcher
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_USER=matcher_admin
-      - POSTGRES_PASSWORD=dbpassword123
-      - POSTGRES_DB=resumematcher
     ports:
-      - "5432:5432"
+      - "5433:5432"
+    networks:
+      - appnet
 
-  
   backend:
     build: .
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      ADZUNA_APP_ID: ${ADZUNA_APP_ID}
+      ADZUNA_APP_KEY: ${ADZUNA_APP_KEY}
+      DATABASE_URL: postgresql://matcher_admin:dbpassword123@db:5432/resumematcher
+      THEIRSTACK_API_KEY: ${THEIRSTACK_API_KEY}
+    volumes:
+      - .:/code
     ports:
       - "8002:8002"
     depends_on:
       - db
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - ADZUNA_APP_ID=${ADZUNA_APP_ID}
-      - ADZUNA_APP_KEY=${ADZUNA_APP_KEY}
-      - DATABASE_URL=postgresql://matcher_admin:dbpassword123@db:5432/resumematcher
-      - THEIRSTACK_API_KEY=${THEIRSTACK_API_KEY}
-    volumes:
-      
-      - .:/code
+    networks:
+      - appnet
 
 volumes:
   postgres_data:
+
+networks:
+  appnet:
+    driver: bridge

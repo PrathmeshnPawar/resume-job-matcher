@@ -4,15 +4,17 @@ import requests
 import hashlib
 import httpx
 import logging
+import time
 import json
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime, Text, create_engine
+from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Session, relationship, sessionmaker, declarative_base
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -24,10 +26,19 @@ from dotenv import load_dotenv
 # 1. Load Config
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
-THEIRSTACK_API_KEY = os.getenv("THEIRSTACK_API_KEY")
-SECRET_KEY = "YOUR_SUPER_SECRET_KEY_HERE" # Change this in production!
+# Job Search Config
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST", "jsearch.p.rapidapi.com")
+# AI Config
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Security Config
+SECRET_KEY = "YOUR_SUPER_SECRET_KEY_HERE"  # Change this in production!
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Setup Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("app")
 
 # 2. Database Setup
 engine = create_engine(DATABASE_URL)
@@ -56,9 +67,16 @@ class Match(Base):
     company = Column(String)
     match_score = Column(Float)
     match_date = Column(DateTime, default=datetime.utcnow)
+    ai_feedback = Column(Text)
 
 # Create Tables
 Base.metadata.create_all(bind=engine)
+# Ensure ai_feedback column exists (for deployments without migrations)
+try:
+    with engine.begin() as conn:
+        conn.execute(sa_text("ALTER TABLE matches ADD COLUMN IF NOT EXISTS ai_feedback TEXT"))
+except Exception:
+    logger.exception("Failed to ensure ai_feedback column exists; continuing")
 
 # 4. Auth Logic
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -111,8 +129,8 @@ class JobSearchRequest(BaseModel):
     title: str
     location: str = ""
     page: int = 0
-    employment_type: Optional[str] = None # New Filter: Full-time, Part-time
-    remote_type: Optional[str] = None     # New Filter: Remote, Hybrid
+    employment_type: Optional[str] = None
+    remote_type: Optional[str] = None
 
 class JobResult(BaseModel):
     id: str
@@ -126,6 +144,7 @@ class MatchResponse(BaseModel):
     match_percentage: float
     missing_skills: List[str]
     matched_skills: List[str]
+    ai_feedback: str
 
 # 6. App & Routes
 app = FastAPI()
@@ -162,151 +181,190 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
-# --- JOB SEARCH ENGINE (Adzuna) ---
-ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
-ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
-# ADZUNA_COUNTRY = os.getenv("ADZUNA_COUNTRY", "us")
-
-
+# --- JOB SEARCH ENGINE ---
 class JobSearchEngine:
     def __init__(self):
-        self.base = "https://api.adzuna.com/v1/api/jobs"
-        self.app_id = ADZUNA_APP_ID
-        self.app_key = ADZUNA_APP_KEY
-        # self.country = ADZUNA_COUNTRY
+        self.host = RAPIDAPI_HOST
+        self.key = RAPIDAPI_KEY
+        self.base = f"https://{self.host}"
 
     def _clean_html(self, html: str) -> str:
-        if not html:
-            return ""
+        if not html: return ""
         text = re.sub(r"<[^>]+>", " ", html)
         return re.sub(r"\s+", " ", text).strip()
 
     def search(self, title: str, location: str, page: int = 0, employment_type: str = None, remote_type: str = None) -> List[JobResult]:
-        if not self.app_id or not self.app_key:
-            # Fail early with a helpful error
-            raise RuntimeError("ADZUNA_APP_ID and ADZUNA_APP_KEY must be set in environment")
+        if not self.key:
+            raise RuntimeError("RAPIDAPI_KEY must be set in environment")
 
-        try:
-            # Adzuna uses 1-indexed pages
-            page_num = max(1, page + 1)
-            url = f"{self.base}/{self.country}/search/{page_num}"
-            params = {
-                "app_id": self.app_id,
-                "app_key": self.app_key,
-                "what": title or "",
-                "where": location or "",
-                "results_per_page": 5,
-            }
+        url = f"{self.base}/search"
+        params = {
+            "query": title or "",
+            "location": location or "",
+            "page": max(1, page + 1),
+            "num_pages": 1,
+            "limit": 5,
+        }
 
-            if employment_type and employment_type != "Any":
-                params["what"] = (params["what"] + " " + employment_type).strip()
-            if remote_type and remote_type != "Any":
-                params["what"] = (params["what"] + " " + remote_type).strip()
+        # Add filters
+        if employment_type and employment_type != "Any":
+            params["query"] = (params["query"] + " " + employment_type).strip()
+        if remote_type and remote_type != "Any":
+            params["query"] = (params["query"] + " " + remote_type).strip()
 
-            headers = {"User-Agent": "resume-matcher/1.0"}
-            resp = requests.get(url, params=params, headers=headers, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+        headers = {
+            "X-RapidAPI-Key": self.key,
+            "X-RapidAPI-Host": self.host,
+        }
 
-            results = []
-            for item in data.get("results", []):
-                title = item.get("title") or item.get("label") or "No Title"
-                company = (item.get("company") or {}).get("display_name") or "Unknown"
-                loc = (item.get("location") or {}).get("display_name") or item.get("location", "") or "Remote"
-                description = self._clean_html(item.get("description") or "")
-                job_id = str(item.get("id") or item.get("redirect_url") or f"adz_{hash(title+company+loc)}")
-                skills = []
+        # RETRY LOGIC
+        max_retries = 3
+        data = None
+        backoff = 1
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Single request with retry/backoff on failures or rate-limits
+                resp = requests.get(url, params=params, headers=headers, timeout=30)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    break
 
-                results.append(JobResult(id=job_id, title=title, company=company, location=loc, description=description, skills=skills))
+                # Respect rate-limit/backoff for retryable statuses
+                if resp.status_code in (429, 503) and attempt < max_retries:
+                    logger.warning("Provider returned %s, retrying attempt %s", resp.status_code, attempt)
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
 
-            return results
-        except Exception as e:
-            print(f"Adzuna API error: {e}")
+                # Non-retryable error from provider
+                logger.error("RapidAPI jobs returned %s: %s", resp.status_code, resp.text)
+                raise HTTPException(status_code=502, detail=f"Jobs provider error: {resp.status_code} - {resp.text}")
+
+            except requests.exceptions.RequestException as e:
+                logger.warning("Request attempt %s failed: %s", attempt, e)
+                if attempt == max_retries:
+                    logger.exception("All RapidAPI attempts failed")
+                    raise HTTPException(status_code=502, detail=f"Jobs provider request failed: {e}")
+                time.sleep(backoff)
+                backoff *= 2
+
+            except Exception as e:
+                logger.error("Attempt %s failed: %s", attempt, e)
+                if attempt == max_retries:
+                    logger.exception("All RapidAPI attempts failed (unexpected error)")
+                    raise HTTPException(status_code=502, detail=f"Jobs provider unexpected error: {e}")
+                time.sleep(backoff)
+                backoff *= 2
+        
+        if not data:
+            # Return empty list instead of crashing if API fails after retries
+            logger.error("Job search failed after retries")
             return []
 
+        results = []
+        for item in data.get("data", []):
+            jid = item.get("job_id") or item.get("job_uuid") or item.get("id") or item.get("job_link")
+            title_text = item.get("job_title") or item.get("title") or "No Title"
+            company = item.get("employer_name") or item.get("company_name") or item.get("job_employer") or "Unknown"
+            
+            city = item.get("job_city") or item.get("location") or "Remote"
+            country = item.get("job_country") or ""
+            loc = (city + (", " + country if country else "")).strip()
+            
+            description = self._clean_html(item.get("job_description") or item.get("description") or "")
+            job_id = str(jid or f"rapid_{hash(title_text+company+loc)}")
+            
+            results.append(JobResult(
+                id=job_id, 
+                title=title_text, 
+                company=company, 
+                location=loc or "Remote", 
+                description=description, 
+                skills=[]
+            ))
+
+        return results
 
 search_engine = JobSearchEngine()
-
-# GEMINI / Generative Language API key
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MOCK = os.getenv("GEMINI_MOCK", "false").lower() in ("1", "true", "yes")
-
-logger = logging.getLogger("app")
-logging.basicConfig(level=logging.INFO)
-
-
-def call_gemini(prompt_text: str, model: str = "chat-bison-001", max_tokens: int = 800):
-    """Call the Generative Language REST API (Gemini/chat-bison style).
-    Returns a parsed JSON object when possible, otherwise returns dict with 'raw'.
-    """
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY not set")
-
-    url = f"https://generativelanguage.googleapis.com/v1beta2/models/{model}:generate?key={GEMINI_API_KEY}"
-
-    system_prompt = (
-        "You are an expert resume reviewer. Return ONLY a JSON object with keys: "
-        '"score" (0-100), "criticisms" (list of short points), "suggestions" (list of short actionable items), '
-        '"improvements" (optional list of suggested rewrites). Do not include extra text.'
-    )
-
-    full_prompt = system_prompt + "\n\nResume Text:\n" + prompt_text
-
-    payload = {
-        "prompt": {"text": full_prompt},
-        "temperature": 0.2,
-        "max_output_tokens": max_tokens,
-    }
-
-    try:
-        with httpx.Client(timeout=60.0) as client:
-            r = client.post(url, json=payload)
-            r.raise_for_status()
-            data = r.json()
-    except httpx.HTTPStatusError as e:
-        # include response content for debugging
-        content = None
-        try:
-            content = e.response.text
-        except Exception:
-            content = str(e)
-        logger.error("Gemini API returned HTTP error: %s", content)
-        raise RuntimeError(f"Gemini API HTTP error: {e.response.status_code} - {content}")
-    except Exception as e:
-        logger.exception("Error calling Gemini API: %s", e)
-        raise RuntimeError(f"Error calling Gemini API: {e}")
-
-    generated = ""
-    # Common shapes: 'candidates' or 'output'
-    if isinstance(data, dict) and "candidates" in data and len(data["candidates"]) > 0:
-        generated = data["candidates"][0].get("content", "")
-    elif isinstance(data, dict) and "output" in data and isinstance(data["output"], list):
-        pieces = []
-        for item in data["output"]:
-            if isinstance(item, dict) and "content" in item:
-                for c in item["content"]:
-                    if c.get("type") == "output_text":
-                        pieces.append(c.get("text", ""))
-        generated = "\n".join(pieces)
-    else:
-        # fallback: stringify
-        try:
-            generated = data.get("candidates", [{}])[0].get("content", str(data))
-        except Exception:
-            generated = str(data)
-
-    # Try to parse JSON out of the generated text
-    try:
-        m = re.search(r"\{[\s\S]*\}", generated)
-        json_text = m.group(0) if m else generated
-        return json.loads(json_text)
-    except Exception:
-        logger.warning("Failed to parse JSON from Gemini output; returning raw text")
-        return {"raw": generated}
 
 @app.post("/search-jobs")
 def search_jobs(request: JobSearchRequest):
     return search_engine.search(request.title, request.location, request.page, request.employment_type, request.remote_type)
+
+# --- GEMINI AI ENGINE ---
+def call_gemini(prompt_text: str, job_desc: str = None) -> Union[str, dict]:
+    """
+    Calls Gemini 2.0 Flash.
+    - If job_desc is provided, returns TEXT critique (for Match Resume).
+    - If job_desc is None, returns JSON object (for Review Resume).
+    """
+    if not GEMINI_API_KEY:
+        return "AI Critique Unavailable (Missing API Key)" if job_desc else {}
+    
+    model = "gemini-2.0-flash"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+    
+    # Mode 1: Match Critique (Text Output)
+    if job_desc:
+        instruction = f"""
+        You are an expert Technical Recruiter. 
+        Compare this Resume to the Job Description.
+        
+        RESUME:
+        {prompt_text[:4000]} 
+        
+        JOB DESCRIPTION:
+        {job_desc[:4000]}
+        
+        Provide a helpful critique in markdown format:
+        1. **Strengths:** Mention 2 things the candidate matches well.
+        2. **Missing Keywords:** List 3 specific technical skills or tools missing from the resume that are in the JD.
+        3. **Recommendation:** One sentence on how to improve.
+        """
+        response_type = "text/plain"
+        
+    # Mode 2: General Review (JSON Output)
+    else:
+        instruction = f"""
+        You are an expert resume reviewer. 
+        Analyze the following resume and provide a structured critique.
+        
+        RESUME:
+        {prompt_text[:4000]} 
+        
+        Output a valid JSON object with keys: "score" (0-100), "criticisms" (list of strings), "suggestions" (list of strings).
+        Do NOT use Markdown blocks.
+        """
+        response_type = "application/json"
+
+    payload = {
+        "contents": [{"parts": [{"text": instruction}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 1000,
+            "responseMimeType": response_type
+        }
+    }
+
+    try:
+        # Increased timeout to 60s for AI
+        with httpx.Client(timeout=60.0) as client:
+            response = client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            result_text = data["candidates"][0]["content"]["parts"][0]["text"]
+            
+            if job_desc:
+                return result_text # Return Text
+            else:
+                # Return JSON object
+                clean_json = re.sub(r"```json|```", "", result_text).strip()
+                return json.loads(clean_json)
+            
+    except Exception as e:
+        logger.error(f"Gemini Error: {e}")
+        return "AI Analysis unavailable." if job_desc else {}
 
 # --- MATCHING ENGINE ---
 def calculate_match(resume_text, jd):
@@ -336,34 +394,56 @@ async def match_resume(
     current_user: User = Depends(get_current_user), 
     db: Session = Depends(get_db)
 ):
-    reader = PdfReader(file.file)
-    text = "".join([page.extract_text() or "" for page in reader.pages])
-    
+    try:
+        reader = PdfReader(file.file)
+        text = "".join([page.extract_text() or "" for page in reader.pages])
+    except Exception:
+        text = ""
+
     score = calculate_match(text, job_description)
     
-    # Skills comparison removed per request — return empty lists for matched/missing skills
-    matched = []
-    missing = []
+    # Auto-detect skills
+    COMMON_TECH_STACK = ["Python", "Java", "Spring", "React", "AWS", "Docker", "Kubernetes", "SQL", "NoSQL", "Linux", "Git", "CI/CD", "Azure", "C#", ".NET", "JavaScript", "HTML", "CSS"]
+    
+    if job_skills:
+        jd_skills_list = [s.strip() for s in job_skills.split(",")]
+    else:
+        jd_skills_list = [tech for tech in COMMON_TECH_STACK if tech.lower() in job_description.lower()]
+
+    missing = [s for s in jd_skills_list if s.lower() not in text.lower()]
+    matched = [s for s in jd_skills_list if s.lower() in text.lower()]
+
+    # Call Gemini (Text Mode)
+    ai_critique = call_gemini(text, job_desc=job_description)
+    
+    # Ensure ai_critique is a string (in case of error returning dict)
+    if not isinstance(ai_critique, str):
+        ai_critique = "AI Analysis unavailable."
 
     db.add(Match(
         user_id=current_user.id, 
         job_title=job_description[:50] + "...", 
         company="Unknown", 
-        match_score=score
+        match_score=score,
+        ai_feedback=ai_critique 
     ))
     db.commit()
 
-    return MatchResponse(match_percentage=score, missing_skills=missing, matched_skills=matched)
-
+    return MatchResponse(
+        match_percentage=score, 
+        missing_skills=missing, 
+        matched_skills=matched,
+        ai_feedback=ai_critique
+    )
 
 @app.post("/review-resume")
 async def review_resume(
     file: UploadFile = File(...),
     job_description: str = Form(None),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    """Extract resume text and call Gemini to produce a structured critique and suggestions."""
+    """
+    Endpoint for generic resume review (JSON output).
+    """
     try:
         reader = PdfReader(file.file)
         resume_text = "".join([page.extract_text() or "" for page in reader.pages])
@@ -374,28 +454,12 @@ async def review_resume(
     if job_description:
         prompt_text = f"Job Description:\n{job_description}\n\nResume:\n{resume_text}"
 
-    # If GEMINI_API_KEY is not set, either return a mock response (if enabled)
-    # or return an informative error so the frontend can surface it.
-    if not GEMINI_API_KEY:
-        if GEMINI_MOCK:
-            logger.info("GEMINI_API_KEY not set - returning mock AI review (GEMINI_MOCK=true)")
-            mock = {
-                "score": 75,
-                "criticisms": ["Summary is short", "Add quantifiable achievements"],
-                "suggestions": ["Expand summary to 3-4 lines", "Add metrics to projects"],
-                "improvements": [{"section": "Summary", "rewrite": "Experienced Software Engineer with 5+ years..."}]
-            }
-            return mock
-        else:
-            logger.error("GEMINI_API_KEY not set and GEMINI_MOCK is false")
-            raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured on server. Set GEMINI_API_KEY or enable GEMINI_MOCK for testing.")
-
-    try:
-        result = call_gemini(prompt_text)
-    except Exception as e:
-        logger.exception("call_gemini failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"AI call failed: {e}")
-
+    # Call Gemini (JSON Mode)
+    result = call_gemini(prompt_text, job_desc=None)
+    
+    if not result:
+        raise HTTPException(status_code=500, detail="AI Analysis failed")
+        
     return result
 
 @app.get("/history")
@@ -404,4 +468,4 @@ def get_history(current_user: User = Depends(get_current_user), db: Session = De
 
 @app.get("/")
 def root():
-    return {"message": "Resume Matcher API is Online and Connected to Neon DB!"}
+    return {"message": "Resume Matcher API is Online!"}
