@@ -1,5 +1,6 @@
 import os
 import re
+import io
 import requests
 import hashlib
 import httpx
