@@ -466,6 +466,11 @@ async def review_resume(
 def get_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.query(Match).filter(Match.user_id == current_user.id).order_by(Match.match_date.desc()).all()
 
-@app.get("/")
+# --- HEALTH CHECK (Fixes Render Shutdown) ---
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"message": "Resume Matcher API is Online!"}
+
+@app.get("/healthz")
+def health_check():
+    return {"status": "ok"}
