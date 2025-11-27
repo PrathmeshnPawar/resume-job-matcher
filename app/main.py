@@ -307,18 +307,26 @@ def call_gemini(prompt_text: str, job_desc: str = None) -> Union[str, dict]:
     headers = {"Content-Type": "application/json"}
     
     # Mode 1: Match Critique (Text Output)
+    # Mode 1: Match Critique (Text Output)
     if job_desc:
         instruction = f"""
         You are an expert Technical Recruiter. 
-        Compare this Resume to the Job Description.
+        I am providing you with a RESUME and a JOB DESCRIPTION.
         
-        RESUME:
-        {prompt_text[:4000]} 
+        Your task is to compare them and provide a critique.
         
+        ===============
         JOB DESCRIPTION:
         {job_desc[:4000]}
+        ===============
         
-        Provide a helpful critique in markdown format:
+        ===============
+        RESUME TEXT:
+        {prompt_text[:4000]}
+        ===============
+        
+        If the Resume Text seems empty or garbled, state that clearly.
+        Otherwise, provide a helpful critique in markdown format:
         1. **Strengths:** Mention 2 things the candidate matches well.
         2. **Missing Keywords:** List 3 specific technical skills or tools missing from the resume that are in the JD.
         3. **Recommendation:** One sentence on how to improve.
@@ -329,11 +337,13 @@ def call_gemini(prompt_text: str, job_desc: str = None) -> Union[str, dict]:
     else:
         instruction = f"""
         You are an expert resume reviewer. 
-        Analyze the following resume and provide a structured critique.
         
-        RESUME:
-        {prompt_text[:4000]} 
+        ===============
+        RESUME TEXT:
+        {prompt_text[:4000]}
+        ===============
         
+        Analyze the resume text above.
         Output a valid JSON object with keys: "score" (0-100), "criticisms" (list of strings), "suggestions" (list of strings).
         Do NOT use Markdown blocks.
         """
@@ -440,39 +450,49 @@ async def match_resume(
 @app.post("/review-resume")
 async def review_resume(
     file: UploadFile = File(...),
-    job_description: str = Form(None),
 ):
-    """
-    Endpoint for generic resume review (JSON output).
-    """
     try:
-        # FIX: Read the file content into memory first
+        print(f"📂 Received file: {file.filename}")
         content = await file.read()
+        print(f"📏 File size: {len(content)} bytes")
+        
         if not content:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+            raise HTTPException(400, "Uploaded file is empty")
             
-        # Pass the bytes to PdfReader using io.BytesIO
         reader = PdfReader(io.BytesIO(content))
-        resume_text = "".join([page.extract_text() or "" for page in reader.pages])
+        
+        resume_text = ""
+        for i, page in enumerate(reader.pages):
+            page_text = page.extract_text()
+            if page_text:
+                resume_text += page_text + "\n"
+            else:
+                print(f"⚠️ Page {i+1} extracted empty text")
+        
+        print(f"📝 Extracted Text Length: {len(resume_text)} chars")
         
         if len(resume_text.strip()) < 50:
-             raise HTTPException(status_code=400, detail="PDF is image-based or empty. Please upload a text PDF.")
-             
+             raise HTTPException(400, "PDF contains images or unreadable text.")
+
     except Exception as e:
-        logger.exception(f"PDF Parse Error: {e}")
-        raise HTTPException(status_code=400, detail=f"Unable to read PDF: {e}")
+        print(f"❌ PDF Error: {e}")
+        raise HTTPException(400, f"Unable to read PDF: {e}")
 
+    # ❌ REMOVE job_description logic
+    # ❌ REMOVE combined prompt
+    # ❌ REMOVE anything involving JD
+
+    # ALWAYS send ONLY the resume text for review mode
     prompt_text = resume_text
-    if job_description:
-        prompt_text = f"Job Description:\n{job_description}\n\nResume:\n{resume_text}"
 
-    # Call Gemini (JSON Mode)
+    # JSON review mode
     result = call_gemini(prompt_text, job_desc=None)
     
     if not result:
-        raise HTTPException(status_code=500, detail="AI Analysis failed")
+        raise HTTPException(500, "AI Analysis failed")
         
     return result
+
 
 @app.get("/history")
 def get_history(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
