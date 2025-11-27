@@ -445,9 +445,20 @@ async def review_resume(
     Endpoint for generic resume review (JSON output).
     """
     try:
-        reader = PdfReader(file.file)
+        # FIX: Read the file content into memory first
+        content = await file.read()
+        if not content:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+            
+        # Pass the bytes to PdfReader using io.BytesIO
+        reader = PdfReader(io.BytesIO(content))
         resume_text = "".join([page.extract_text() or "" for page in reader.pages])
+        
+        if len(resume_text.strip()) < 50:
+             raise HTTPException(status_code=400, detail="PDF is image-based or empty. Please upload a text PDF.")
+             
     except Exception as e:
+        logger.exception(f"PDF Parse Error: {e}")
         raise HTTPException(status_code=400, detail=f"Unable to read PDF: {e}")
 
     prompt_text = resume_text
