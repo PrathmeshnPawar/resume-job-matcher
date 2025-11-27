@@ -162,70 +162,68 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
-# --- JOB SEARCH ENGINE ---
+# --- JOB SEARCH ENGINE (Adzuna) ---
+ADZUNA_APP_ID = os.getenv("ADZUNA_APP_ID")
+ADZUNA_APP_KEY = os.getenv("ADZUNA_APP_KEY")
+# ADZUNA_COUNTRY = os.getenv("ADZUNA_COUNTRY", "us")
+
+
 class JobSearchEngine:
     def __init__(self):
-        self.base_url = "https://api.theirstack.com/v1/jobs/search"
-        self.api_key = THEIRSTACK_API_KEY
+        self.base = "https://api.adzuna.com/v1/api/jobs"
+        self.app_id = ADZUNA_APP_ID
+        self.app_key = ADZUNA_APP_KEY
+        # self.country = ADZUNA_COUNTRY
+
+    def _clean_html(self, html: str) -> str:
+        if not html:
+            return ""
+        text = re.sub(r"<[^>]+>", " ", html)
+        return re.sub(r"\s+", " ", text).strip()
 
     def search(self, title: str, location: str, page: int = 0, employment_type: str = None, remote_type: str = None) -> List[JobResult]:
+        if not self.app_id or not self.app_key:
+            # Fail early with a helpful error
+            raise RuntimeError("ADZUNA_APP_ID and ADZUNA_APP_KEY must be set in environment")
+
         try:
-            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-            
-            payload = {
-                "job_title_or": [title],
-                "posted_at_max_age_days": 45,
-                "limit": 5,
-                "page": page, 
-                "include_total_results": False
+            # Adzuna uses 1-indexed pages
+            page_num = max(1, page + 1)
+            url = f"{self.base}/{self.country}/search/{page_num}"
+            params = {
+                "app_id": self.app_id,
+                "app_key": self.app_key,
+                "what": title or "",
+                "where": location or "",
+                "results_per_page": 5,
             }
 
-            # 1. Location & Work Style Logic
-            locations = []
-            if location and location.strip().lower() not in ["", "anywhere", "global", "remote"]:
-                locations.append(location)
-            
-            if remote_type and remote_type != "Any":
-                if remote_type.lower() == "remote":
-                    locations.append("remote")
-                elif remote_type.lower() == "hybrid":
-                    locations.append("hybrid")
-            
-            if locations:
-                payload["job_location_pattern_or"] = locations
-
-            # 2. Employment Type Logic (Using description matching)
             if employment_type and employment_type != "Any":
-                patterns = []
-                et = employment_type.lower()
-                if "full" in et: patterns = ["full-time", "full time"]
-                elif "part" in et: patterns = ["part-time", "part time"]
-                elif "contract" in et: patterns = ["contract", "contractor"]
-                elif "intern" in et: patterns = ["intern", "internship"]
-                elif "freelance" in et: patterns = ["freelance"]
-                
-                if patterns:
-                    payload["job_description_pattern_or"] = patterns
+                params["what"] = (params["what"] + " " + employment_type).strip()
+            if remote_type and remote_type != "Any":
+                params["what"] = (params["what"] + " " + remote_type).strip()
 
-            response = requests.post(self.base_url, json=payload, headers=headers, timeout=20)
-            response.raise_for_status()
-            data = response.json()
-            
-            clean_jobs = []
-            for item in data.get('data', []):
-                loc = item.get("job_location") or "Remote"
-                clean_jobs.append(JobResult(
-                    id=str(item.get("id")), 
-                    title=item.get("job_title") or "No Title",
-                    company=item.get("company_object", {}).get("name") or "Unknown",
-                    location=loc,
-                    description=item.get("description") or "No description", 
-                    skills=item.get("technologies", [])
-                ))
-            return clean_jobs
+            headers = {"User-Agent": "resume-matcher/1.0"}
+            resp = requests.get(url, params=params, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+
+            results = []
+            for item in data.get("results", []):
+                title = item.get("title") or item.get("label") or "No Title"
+                company = (item.get("company") or {}).get("display_name") or "Unknown"
+                loc = (item.get("location") or {}).get("display_name") or item.get("location", "") or "Remote"
+                description = self._clean_html(item.get("description") or "")
+                job_id = str(item.get("id") or item.get("redirect_url") or f"adz_{hash(title+company+loc)}")
+                skills = []
+
+                results.append(JobResult(id=job_id, title=title, company=company, location=loc, description=description, skills=skills))
+
+            return results
         except Exception as e:
-            print(f"API Error: {e} -> Returning Mock Data")
-            return [JobResult(id="mock", title="Mock Job", company="Mock Corp", location="Remote", description="Mock Desc", skills=["Python"])]
+            print(f"Adzuna API error: {e}")
+            return []
+
 
 search_engine = JobSearchEngine()
 
