@@ -5,7 +5,7 @@ import os
 
 # SMART CONFIG
 BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8002") 
-st.set_page_config(page_title="Resume Matcher Pro", page_icon="💼", layout="wide")
+st.set_page_config(page_title="JobFit", page_icon="💼", layout="wide")
 
 # --- SESSION STATE ---
 if 'token' not in st.session_state: st.session_state.token = None
@@ -59,7 +59,7 @@ with st.sidebar:
     if st.button("Logout"): logout()
     st.divider()
 
-st.title("🚀 Resume Matcher Pro")
+st.title("JobFit ")
 tab1, tab2 = st.tabs(["🔍 Find Jobs", "📜 History"])
 
 with tab1:
